@@ -8,6 +8,13 @@ corpus_downloader.import_corpus("lat_models_cltk")
 from cltk.lemmatize.lat import LatinBackoffLemmatizer
 lemmatizer = LatinBackoffLemmatizer()
 
+pip install stanza
+python -c "import stanza; stanza.download('la')"
+
+import stanza
+# Load once, at module level — do NOT put this inside a function,
+# or it'll reload the model every time you call analyze_text.
+nlp = stanza.Pipeline('la', processors='tokenize,pos,lemma,depparse')
 
 
 from collections import Counter
@@ -15,9 +22,8 @@ import string
 import re
 import unicodedata
 
-# ---------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------
+
+
 
 # Words where -que/-ve/-ne is NOT an enclitic (part of the word itself)
 ENCLITIC_EXCEPTIONS = {
@@ -119,9 +125,8 @@ FORM_TO_LEMMA = {
     for form in forms
 }
 
-# ---------------------------------------------------------------------
-# Helper functions (must be defined before analyze_text uses them)
-# ---------------------------------------------------------------------
+
+
 
 def normalize_macrons(word):
     """Strip macrons and other diacritics, e.g. ū -> u, ō -> o."""
@@ -154,11 +159,54 @@ def function_word_profile(clean_words, form_to_lemma=FORM_TO_LEMMA):
     profile = {lemma: count / total for lemma, count in lemma_counts.items()}
     return dict(sorted(profile.items(), key=lambda x: -x[1]))
 
-# ---------------------------------------------------------------------
-# Main analysis functions
-# ---------------------------------------------------------------------
 
-def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=True, lemmatize_flag=True):
+def parse_feats(feats_str):
+    """Turn 'Case=Gen|Number=Sing|Gender=Masc' into a dict."""
+    if not feats_str:
+        return {}
+    return dict(pair.split('=') for pair in feats_str.split('|'))
+
+
+def morphological_profile(text):
+    doc = nlp(text)
+
+    case_counts = Counter()
+    tense_counts = Counter()
+    mood_counts = Counter()
+    voice_counts = Counter()
+    pos_counts = Counter()
+    tagged_words = []
+
+    for sent in doc.sentences:
+        for word in sent.words:
+            feats = parse_feats(word.feats)
+            pos_counts[word.upos] += 1
+            if 'Case' in feats:
+                case_counts[feats['Case']] += 1
+            if 'Tense' in feats:
+                tense_counts[feats['Tense']] += 1
+            if 'Mood' in feats:
+                mood_counts[feats['Mood']] += 1
+            if 'Voice' in feats:
+                voice_counts[feats['Voice']] += 1
+            tagged_words.append((word.text, word.lemma, word.upos, feats))
+
+    total = len(tagged_words)
+    return {
+        "tagged_words": tagged_words,
+        "pos_distribution": {k: v / total for k, v in pos_counts.items()} if total else {},
+        "case_distribution": {k: v / sum(case_counts.values()) for k, v in case_counts.items()} if case_counts else {},
+        "tense_distribution": {k: v / sum(tense_counts.values()) for k, v in tense_counts.items()} if tense_counts else {},
+        "mood_distribution": {k: v / sum(mood_counts.values()) for k, v in mood_counts.items()} if mood_counts else {},
+        "voice_distribution": {k: v / sum(voice_counts.values()) for k, v in voice_counts.items()} if voice_counts else {},
+    }
+
+!pip install stanza
+import stanza
+stanza.download('la')
+nlp = stanza.Pipeline('la', processors='tokenize,pos,lemma,depparse')
+
+def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=True, lemmatize_flag=True, morphology_flag=True):
     sentences = re.split(r'[.!?]+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
 
@@ -202,8 +250,18 @@ def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=T
         "frequencies": frequencies,
         "enclitic_count": len(enclitics_found),
         "enclitic_breakdown": Counter(enclitics_found),
-        "function_word_profile": function_word_profile(clean_words),
+       "function_word_profile": function_word_profile(clean_words),
     }
+
+    if morphology_flag:
+        morph = morphological_profile(text)
+        stats["pos_distribution"] = morph["pos_distribution"]
+        stats["case_distribution"] = morph["case_distribution"]
+        stats["tense_distribution"] = morph["tense_distribution"]
+        stats["mood_distribution"] = morph["mood_distribution"]
+        stats["voice_distribution"] = morph["voice_distribution"]
+        stats["tagged_words"] = morph["tagged_words"]
+
     return stats
 
 
@@ -219,21 +277,25 @@ def print_stats(stats):
     print("Enclitics found:", stats["enclitic_count"], dict(stats["enclitic_breakdown"]))
     print("Function-word profile (top 5):",
           dict(list(stats["function_word_profile"].items())[:5]))
+
+    if "case_distribution" in stats:
+        print("POS distribution:", {k: round(v, 3) for k, v in stats["pos_distribution"].items()})
+        print("Case distribution:", {k: round(v, 3) for k, v in stats["case_distribution"].items()})
+        print("Tense distribution:", {k: round(v, 3) for k, v in stats["tense_distribution"].items()})
+        print("Mood distribution:", {k: round(v, 3) for k, v in stats["mood_distribution"].items()})
+        print("Voice distribution:", {k: round(v, 3) for k, v in stats["voice_distribution"].items()})
+
     print()
 
-# ---------------------------------------------------------------------
-# Run it
-# ---------------------------------------------------------------------
+
+
 
 text1 = """
 Rerum gestarum divi Augusti, quibus orbem terrarum imperio populi Romani subiecit, et impensarum quas in rem publicam populumque Romanum fecit, incisarum in duabus aheneis pilis, quae sunt Romae positae, exemplar subiectum.
-
 Annos undeviginti natus exercitum privato consilio et privata impensa comparavi, per quem rem publicam a dominatione factionis oppressam in libertatem vindicavi. [Ob quae] senatus decretis honorificis in ordinem suum me adlegit, C. Pansa et A. Hirtio consulibus, consularem locum sententiae dicendae tribuens, et imperium mihi dedit. Res publica ne quid detrimenti caperet, me propraetore simul cum consulibus providere iussit. Populus autem eodem anno me consulem, cum cos. uterque bello cecidisset, et triumvirum rei publicae constituendae creavit.
-
 Qui parentem meum trucidaverunt, eos in exilium expuli iudiciis legitimis ultus eorum facinus, et postea bellum inferentis rei publicae vici bis acie.
-
-Bella terra et mari civilia externaque toto in orbe terrarum saepe gessi, victorque omnibus veniam petentibus civibus peperci. Externas gentes, quibus tuto ignosci potuit, conservare quam excidere malui. Millia civium Romanorum sub sacramento meo fuerunt circiter quingenta. Ex quibus deduxi in colonias aut remisi in municipia sua stipendis emeritis millia aliquanto plura quam trecenta, et iis omnibus agros adsignavi aut pecuniam pro praemiis militiae dedi. Naves cepi sescentas praeter eas, si quae minores quam triremes fuerunt.
 """
 
 stats1 = analyze_text(text1, label="Augustus excerpt")
 print_stats(stats1)
+
