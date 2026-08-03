@@ -1,3 +1,216 @@
-text = "Gallia est omnis divisa in partes tres."
-words = text.split()
-print("Number of words:", len(words))
+from collections import Counter
+import string
+import re
+import unicodedata
+
+# ---------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------
+
+# Words where -que/-ve/-ne is NOT an enclitic (part of the word itself)
+ENCLITIC_EXCEPTIONS = {
+    'que', 'atque', 'neque', 'quoque', 'itaque', 'absque', 'undique',
+    'utique', 'denique', 'quandoque', 'ubique', 'plerique', 'plerumque',
+    've', 'sive', 'neve',
+    'ne', 'bene', 'plane', 'sane', 'paene', 'pone', 'sine', 'fere',
+}
+
+# Function words grouped by lemma, with common inflected forms.
+# Not exhaustive (Latin morphology is large), but covers the
+# high-frequency forms that actually show up in classical prose.
+LATIN_FUNCTION_WORD_LEMMAS = {
+    # --- conjunctions / particles (indeclinable, no inflection needed) ---
+    'et':     {'et'},
+    'atque':  {'atque', 'ac'},
+    'sed':    {'sed'},
+    'aut':    {'aut'},
+    'vel':    {'vel'},
+    'nam':    {'nam'},
+    'enim':   {'enim'},
+    'igitur': {'igitur'},
+    'ergo':   {'ergo'},
+    'tamen':  {'tamen'},
+    'autem':  {'autem'},
+    'que':    {'que'},
+    've':     {'ve'},
+    'si':     {'si'},
+    'ut':     {'ut'},
+    'ne':     {'ne'},
+    'non':    {'non'},
+    'quia':   {'quia'},
+    'quam':   {'quam'},
+
+    # --- prepositions (indeclinable) ---
+    'in':   {'in'},
+    'ad':   {'ad'},
+    'cum':  {'cum'},
+    'ex':   {'ex', 'e'},
+    'de':   {'de'},
+    'ab':   {'ab', 'a'},
+
+    # --- sum, esse (to be) — very high frequency, heavily inflected ---
+    'sum': {
+        'sum', 'es', 'est', 'sumus', 'estis', 'sunt',        # present
+        'eram', 'eras', 'erat', 'eramus', 'eratis', 'erant', # imperfect
+        'ero', 'eris', 'erit', 'erimus', 'eritis', 'erunt',  # future
+        'fui', 'fuisti', 'fuit', 'fuimus', 'fuistis', 'fuerunt', 'fuere', # perfect
+        'sim', 'sis', 'sit', 'simus', 'sitis', 'sint',       # subjunctive
+        'esse', 'fuisse', 'futurus',                          # infinitives/participle
+    },
+
+    # --- is, ea, id (he/she/it/that) — demonstrative/anaphoric pronoun ---
+    'is': {
+        'is', 'ea', 'id', 'eius', 'ei', 'eum', 'eam',
+        'eo', 'ea', 'ii', 'eae', 'eorum', 'earum',
+        'iis', 'eis', 'eos', 'eas',
+    },
+
+    # --- hic, haec, hoc (this) ---
+    'hic': {
+        'hic', 'haec', 'hoc', 'huius', 'huic', 'hunc', 'hanc',
+        'hoc', 'hi', 'hae', 'horum', 'harum', 'his', 'hos', 'has',
+    },
+
+    # --- ille, illa, illud (that) ---
+    'ille': {
+        'ille', 'illa', 'illud', 'illius', 'illi', 'illum', 'illam',
+        'illo', 'illi', 'illae', 'illorum', 'illarum',
+        'illis', 'illos', 'illas',
+    },
+
+    # --- ipse, ipsa, ipsum (himself/itself) ---
+    'ipse': {
+        'ipse', 'ipsa', 'ipsum', 'ipsius', 'ipsi', 'ipsum', 'ipsam',
+        'ipso', 'ipsi', 'ipsae', 'ipsorum', 'ipsarum',
+        'ipsis', 'ipsos', 'ipsas',
+    },
+
+    # --- qui, quae, quod (relative/interrogative pronoun) ---
+    'qui': {
+        'qui', 'quae', 'quod', 'cuius', 'cui', 'quem', 'quam',
+        'quo', 'qua', 'quorum', 'quarum',
+        'quibus', 'quos', 'quas',
+    },
+
+    # --- sui, suus (reflexive) ---
+    'sui': {'sui', 'sibi', 'se'},
+    'suus': {
+        'suus', 'sua', 'suum', 'sui', 'suae', 'suo',
+        'suos', 'suas', 'suorum', 'suarum', 'suis',
+    },
+}
+
+# Flatten into: form -> lemma  (fast lookup when scanning clean_words)
+FORM_TO_LEMMA = {
+    form: lemma
+    for lemma, forms in LATIN_FUNCTION_WORD_LEMMAS.items()
+    for form in forms
+}
+
+# ---------------------------------------------------------------------
+# Helper functions (must be defined before analyze_text uses them)
+# ---------------------------------------------------------------------
+
+def normalize_macrons(word):
+    """Strip macrons and other diacritics, e.g. ū -> u, ō -> o."""
+    normalized = unicodedata.normalize('NFD', word)
+    stripped = ''.join(ch for ch in normalized if unicodedata.category(ch) != 'Mn')
+    return unicodedata.normalize('NFC', stripped)
+
+
+def split_enclitics(word):
+    """Split -que, -ve, -ne enclitics off a word, returning (stem, enclitic or None)."""
+    if word in ENCLITIC_EXCEPTIONS:
+        return word, None
+
+    for enclitic in ('que', 've', 'ne'):
+        if word.endswith(enclitic) and len(word) > len(enclitic) + 2:
+            stem = word[:-len(enclitic)]
+            return stem, enclitic
+
+    return word, None
+
+
+def function_word_profile(clean_words, form_to_lemma=FORM_TO_LEMMA):
+    """Relative frequency of each function-word LEMMA (proportion of total words)."""
+    total = len(clean_words)
+    lemma_counts = Counter()
+    for w in clean_words:
+        lemma = form_to_lemma.get(w)
+        if lemma:
+            lemma_counts[lemma] += 1
+    profile = {lemma: count / total for lemma, count in lemma_counts.items()}
+    return dict(sorted(profile.items(), key=lambda x: -x[1]))
+
+# ---------------------------------------------------------------------
+# Main analysis functions
+# ---------------------------------------------------------------------
+
+def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=True):
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    words = text.split()
+    clean_words = []
+    enclitics_found = []
+
+    for word in words:
+        word = word.strip(string.punctuation).lower()
+        if not word:
+            continue
+        if normalize_flag:
+            word = normalize_macrons(word)
+        if split_enclitics_flag:
+            stem, enclitic = split_enclitics(word)
+            clean_words.append(stem)
+            if enclitic:
+                enclitics_found.append(enclitic)
+        else:
+            clean_words.append(word)
+
+    frequencies = Counter(clean_words)
+    word_lengths = [len(w) for w in clean_words]
+
+    stats = {
+        "label": label,
+        "total_words": len(clean_words),
+        "unique_words": len(frequencies),
+        "vocab_diversity": len(frequencies) / len(clean_words) if clean_words else 0,
+        "avg_word_length": sum(word_lengths) / len(word_lengths) if word_lengths else 0,
+        "num_sentences": len(sentences),
+        "avg_sentence_length": len(clean_words) / len(sentences) if sentences else 0,
+        "most_common": frequencies.most_common(5),
+        "frequencies": frequencies,
+        "enclitic_count": len(enclitics_found),
+        "enclitic_breakdown": Counter(enclitics_found),
+        "function_word_profile": function_word_profile(clean_words),
+    }
+    return stats
+
+
+def print_stats(stats):
+    print(f"--- {stats['label']} ---")
+    print("Total words:", stats["total_words"])
+    print("Different words:", stats["unique_words"])
+    print("Vocabulary diversity:", round(stats["vocab_diversity"], 4))
+    print("Average word length:", round(stats["avg_word_length"], 2))
+    print("Number of sentences:", stats["num_sentences"])
+    print("Average sentence length (words):", round(stats["avg_sentence_length"], 2))
+    print("Most common words:", stats["most_common"])
+    print("Enclitics found:", stats["enclitic_count"], dict(stats["enclitic_breakdown"]))
+    print("Function-word profile (top 5):",
+          dict(list(stats["function_word_profile"].items())[:5]))
+    print()
+
+# ---------------------------------------------------------------------
+# Run it
+# ---------------------------------------------------------------------
+
+text1 = """
+Gallia est omnis divisa in partes tres.
+Gallia est magna, populique eius fortes sunt.
+GALLIA habet multōs populōsque.
+"""
+
+stats1 = analyze_text(text1, label="Caesar excerpt")
+print_stats(stats1)
