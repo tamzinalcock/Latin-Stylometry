@@ -1,3 +1,13 @@
+!pip install cltk
+
+from cltk.data.fetch import FetchCorpus
+
+corpus_downloader = FetchCorpus(language="lat")
+corpus_downloader.import_corpus("lat_models_cltk")
+
+from cltk.lemmatize.lat import LatinBackoffLemmatizer
+lemmatizer = LatinBackoffLemmatizer()
+
 from collections import Counter
 import string
 import re
@@ -146,12 +156,12 @@ def function_word_profile(clean_words, form_to_lemma=FORM_TO_LEMMA):
 # Main analysis functions
 # ---------------------------------------------------------------------
 
-def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=True):
+def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=True, lemmatize_flag=True):
     sentences = re.split(r'[.!?]+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
 
     words = text.split()
-    clean_words = []
+    pre_clean_words = []
     enclitics_found = []
 
     for word in words:
@@ -162,11 +172,18 @@ def analyze_text(text, label="Text", split_enclitics_flag=True, normalize_flag=T
             word = normalize_macrons(word)
         if split_enclitics_flag:
             stem, enclitic = split_enclitics(word)
-            clean_words.append(stem)
+            pre_clean_words.append(stem)
             if enclitic:
                 enclitics_found.append(enclitic)
         else:
-            clean_words.append(word)
+            pre_clean_words.append(word)
+
+    # Lemmatize in one batch call (much faster than per-word)
+    if lemmatize_flag:
+        lemma_pairs = lemmatizer.lemmatize(pre_clean_words)
+        clean_words = [lemma for (form, lemma) in lemma_pairs]
+    else:
+        clean_words = pre_clean_words
 
     frequencies = Counter(clean_words)
     word_lengths = [len(w) for w in clean_words]
@@ -207,10 +224,14 @@ def print_stats(stats):
 # ---------------------------------------------------------------------
 
 text1 = """
-Gallia est omnis divisa in partes tres.
-Gallia est magna, populique eius fortes sunt.
-GALLIA habet multōs populōsque.
+Rerum gestarum divi Augusti, quibus orbem terrarum imperio populi Romani subiecit, et impensarum quas in rem publicam populumque Romanum fecit, incisarum in duabus aheneis pilis, quae sunt Romae positae, exemplar subiectum.
+
+Annos undeviginti natus exercitum privato consilio et privata impensa comparavi, per quem rem publicam a dominatione factionis oppressam in libertatem vindicavi. [Ob quae] senatus decretis honorificis in ordinem suum me adlegit, C. Pansa et A. Hirtio consulibus, consularem locum sententiae dicendae tribuens, et imperium mihi dedit. Res publica ne quid detrimenti caperet, me propraetore simul cum consulibus providere iussit. Populus autem eodem anno me consulem, cum cos. uterque bello cecidisset, et triumvirum rei publicae constituendae creavit.
+
+Qui parentem meum trucidaverunt, eos in exilium expuli iudiciis legitimis ultus eorum facinus, et postea bellum inferentis rei publicae vici bis acie.
+
+Bella terra et mari civilia externaque toto in orbe terrarum saepe gessi, victorque omnibus veniam petentibus civibus peperci. Externas gentes, quibus tuto ignosci potuit, conservare quam excidere malui. Millia civium Romanorum sub sacramento meo fuerunt circiter quingenta. Ex quibus deduxi in colonias aut remisi in municipia sua stipendis emeritis millia aliquanto plura quam trecenta, et iis omnibus agros adsignavi aut pecuniam pro praemiis militiae dedi. Naves cepi sescentas praeter eas, si quae minores quam triremes fuerunt.
 """
 
-stats1 = analyze_text(text1, label="Caesar excerpt")
+stats1 = analyze_text(text1, label="Augustus excerpt")
 print_stats(stats1)
